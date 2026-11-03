@@ -1,0 +1,1628 @@
+openapi: 3.0.3
+info:
+  title: Renova API
+  version: 0.1.0
+  description: |
+    Contrato REST do Renova. O prefixo em execução é `/api/v1`.
+
+    Identificadores de paciente, usuário e receita são o inteiro do banco
+    serializado como texto decimal. Não são UUID.
+
+    Datas civis usam o formato AAAA-MM-DD. A data corrente da classificação
+    de vencimento é o dia civil no fuso America/Sao_Paulo, calculado no
+    servidor. A situação de prazo não é persistida. As faixas de 5 e 15
+    dias estão centralizadas numa única configuração e seguem pendentes
+    de confirmação clínica.
+
+    O paciente persiste nome, CPF, nascimento, telefone, CEP, logradouro,
+    número, complemento, bairro, cidade e UF. Não há inativação; active
+    é sempre verdadeiro. O nome aceita no máximo 150 caracteres.
+
+    O acompanhamento é persistido com paciente obrigatório, usuário
+    responsável e receita opcional do mesmo paciente.
+
+    A receita pode ser gravada sem vencimento e fica pendente de
+    informação. CANCELADA é um estado persistido, reversível para ATIVA
+    pelo PATCH. Receitas canceladas saem dos alertas e do dashboard de
+    prazo. issuedOn, quando enviado, é a data de emissão civil. Se for
+    omitido, o servidor grava o dia corrente em America/Sao_Paulo.
+    validityDays soma essa emissão e define expiresOn. O tipo comum ou
+    controlada e os medicamentos ficam na mesma receita. O tipo só é
+    persistido; não há regra clínica extra para receita controlada.
+
+    Os exemplos são fictícios. O CPF 529.982.247-25 é um valor de
+    demonstração e não identifica uma pessoa real. A máscara do CPF não
+    substitui a validação dos dígitos verificadores por algoritmo.
+
+    Convenções complementares: docs/07-api.md.
+servers:
+  - url: /api/v1
+    description: Prefixo da API em execução.
+tags:
+  - name: Autenticacao
+    description: Login e identidade do usuário autenticado.
+  - name: Pacientes
+    description: Cadastro, consulta e atualização de pacientes.
+  - name: Acompanhamento
+    description: Providências vinculadas ao paciente.
+  - name: Receitas
+    description: Receitas médicas e situação de vencimento.
+  - name: Dashboard
+    description: Indicadores, alertas e pacientes prioritários.
+  - name: Enderecos
+    description: Consulta opcional de CEP em serviço externo.
+security:
+  - bearerAuth: []
+paths:
+  /auth/login:
+    post:
+      tags: [Autenticacao]
+      operationId: login
+      summary: Autenticar usuário
+      description: |
+        Valida usuário e senha no servidor. A resposta de falha é a mesma
+        para usuário inexistente, senha incorreta e usuário inativo.
+        A senha não é devolvida nem registrada em log.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+            example:
+              username: ana.souza@example.com
+              password: senha-ficticia-de-exemplo
+      responses:
+        "200":
+          description: Credenciais aceitas. O token deve ser enviado como Bearer.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LoginResponse"
+              example:
+                accessToken: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.exemplo.ficticio
+                tokenType: Bearer
+                expiresIn: 3600
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          description: Credenciais recusadas, sem indicar o motivo específico.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                code: INVALID_CREDENTIALS
+                message: Credenciais inválidas.
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /auth/me:
+    get:
+      tags: [Autenticacao]
+      operationId: getAuthenticatedUser
+      summary: Obter usuário autenticado
+      description: |
+        Devolve a identidade, os papéis e as permissões efetivas do usuário
+        ativo associado ao token. Não devolve senha nem hash.
+      responses:
+        "200":
+          description: Usuário autenticado.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthenticatedUser"
+              example:
+                id: "4"
+                username: ana.souza@example.com
+                fullName: Ana Souza Fictícia
+                active: true
+                roles:
+                  - code: ADMIN
+                    name: Administrador
+                permissions:
+                  - dashboard:read
+                  - followups:create
+                  - followups:read
+                  - patients:create
+                  - patients:read
+                  - patients:update
+                  - prescriptions:cancel
+                  - prescriptions:create
+                  - prescriptions:read
+                  - prescriptions:update
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /patients:
+    post:
+      tags: [Pacientes]
+      operationId: createPatient
+      summary: Cadastrar paciente
+      description: |
+        Cria um paciente novo. Exige a permissão patients:create.
+        O CPF é validado pelo algoritmo dos dígitos verificadores, e não
+        apenas pela máscara. Se o CPF já existir, a operação responde 409
+        e não altera o paciente existente. O nome aceita no máximo 150
+        caracteres. CEP, UF e os demais campos de endereço são gravados
+        nas colunas próprias.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PatientCreateRequest"
+            example:
+              cpf: 529.982.247-25
+              fullName: Maria Helena Fictícia
+              birthDate: "1984-03-12"
+              phone: "11988887777"
+              postalCode: "01310-000"
+              street: Rua das Acácias
+      responses:
+        "201":
+          description: Paciente cadastrado.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Patient"
+              example:
+                id: "15"
+                cpf: 529.982.247-25
+                fullName: Maria Helena Fictícia
+                birthDate: "1984-03-12"
+                phone: (11) 98888-7777
+                postalCode: 01310-000
+                street: Rua das Acácias
+                addressNumber: null
+                complement: null
+                neighborhood: null
+                city: null
+                state: null
+                age:
+                  years: 42
+                  status: CALCULADA
+                active: true
+                createdAt: "2026-10-18T15:00:00-03:00"
+                updatedAt: "2026-10-18T15:00:00-03:00"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          description: Já existe paciente com o CPF informado. O cadastro existente não é alterado.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CpfConflict"
+              example:
+                code: CPF_ALREADY_EXISTS
+                message: Já existe um paciente cadastrado com este CPF.
+                existingPatientId: "15"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    get:
+      tags: [Pacientes]
+      operationId: listPatients
+      summary: Consultar pacientes
+      description: |
+        Lista pacientes visíveis à permissão patients:read.
+        O parâmetro cpf faz busca exata após a normalização. CPF inválido
+        nesse filtro responde 400. CPF válido sem cadastro responde 200
+        com lista vazia.
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+        - name: sort
+          in: query
+          description: Ordenação. Prefixo - indica ordem decrescente.
+          schema:
+            type: string
+            enum: [fullName, -fullName, createdAt, -createdAt]
+            default: fullName
+        - name: cpf
+          in: query
+          required: false
+          description: CPF com 11 dígitos ou mascarado. A validação dos dígitos verificadores é obrigatória.
+          schema:
+            type: string
+        - name: name
+          in: query
+          required: false
+          description: Trecho do nome, sem diferenciar maiúsculas de minúsculas.
+          schema:
+            type: string
+            maxLength: 200
+      responses:
+        "200":
+          description: Página de pacientes. A lista pode vir vazia.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PatientList"
+              example:
+                data: []
+                page: 1
+                pageSize: 20
+                total: 0
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /patients/priority:
+    get:
+      tags: [Dashboard]
+      operationId: listPriorityPatients
+      summary: Consultar pacientes prioritários
+      description: |
+        Lista pacientes com ao menos uma receita ativa vencida ou com
+        vencimento em até 15 dias, segundo a proposta da RN12. O critério
+        está pendente de confirmação. Exige dashboard:read.
+        Esta rota estática deve ser registrada antes de /patients/{id}.
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+        - name: sort
+          in: query
+          description: Ordenação pela data de vencimento mais próxima considerada na prioridade.
+          schema:
+            type: string
+            enum: [nearestExpiryOn, -nearestExpiryOn]
+            default: nearestExpiryOn
+      responses:
+        "200":
+          description: Página de pacientes prioritários. Lista vazia quando não há casos.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PriorityPatientList"
+              example:
+                data:
+                  - id: "15"
+                    fullName: Maria Helena Fictícia
+                    phone: (11) 98888-7777
+                    nearestExpiryOn: "2026-10-01"
+                    alertBand: VENCIDA
+                    daysUntilExpiry: -17
+                page: 1
+                pageSize: 20
+                total: 1
+                referenceDate: "2026-10-18"
+                timezone: America/Sao_Paulo
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /patients/{id}:
+    parameters:
+      - $ref: "#/components/parameters/PatientId"
+    get:
+      tags: [Pacientes]
+      operationId: getPatient
+      summary: Consultar paciente por identificador
+      description: Exige a permissão patients:read.
+      responses:
+        "200":
+          description: Paciente encontrado.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Patient"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/PatientNotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    patch:
+      tags: [Pacientes]
+      operationId: updatePatient
+      summary: Atualizar dados cadastrais do paciente
+      description: |
+        Atualiza somente os campos enviados. Exige patients:update.
+        Nome diferente do armazenado, na comparação sem diferenciar
+        maiúsculas, exige confirmNameChange verdadeiro. Sem essa
+        confirmação a resposta é 409 e nada é gravado.
+        Enviar null em birthDate, phone ou em um campo de endereço limpa
+        esse campo. Idade, situação, CPF e timestamps não são aceitos
+        no corpo. A idade é recalculada. Nome confirmado gera histórico
+        na mesma transação da atualização.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PatientUpdateRequest"
+            example:
+              fullName: Maria Helena Souza Fictícia
+              confirmNameChange: true
+      responses:
+        "200":
+          description: Ficha atualizada. Troca de nome confirmada também gera histórico.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Patient"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/PatientNotFound"
+        "409":
+          description: O nome informado difere do cadastro e a confirmação não foi enviada.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NameChangeConflict"
+              example:
+                code: NAME_CHANGE_CONFIRMATION_REQUIRED
+                message: O nome informado difere do cadastro. Confirme a alteração para continuar.
+                currentName: Maria Helena Fictícia
+                informedName: Maria Helena Souza Fictícia
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /patients/{id}/follow-ups:
+    parameters:
+      - $ref: "#/components/parameters/PatientId"
+    get:
+      tags: [Acompanhamento]
+      operationId: listPatientFollowUps
+      summary: Consultar histórico de acompanhamento
+      description: |
+        Exige followups:read. Lista vazia significa que o paciente ainda
+        não possui histórico de acompanhamento.
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+        - name: sort
+          in: query
+          schema:
+            type: string
+            enum: [occurredOn, -occurredOn]
+            default: -occurredOn
+      responses:
+        "200":
+          description: Página de acompanhamentos do paciente.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FollowUpList"
+              example:
+                data: []
+                page: 1
+                pageSize: 20
+                total: 0
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/PatientNotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    post:
+      tags: [Acompanhamento]
+      operationId: createPatientFollowUp
+      summary: Registrar acompanhamento
+      description: |
+        Grava uma providência com data e descrição. Exige followups:create.
+        A receita informada, se houver, precisa pertencer ao mesmo paciente.
+        Caso contrário a resposta é 400 e nada é gravado.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FollowUpCreateRequest"
+            example:
+              occurredOn: "2026-10-18"
+              description: Contato telefônico fictício para orientar a renovação da receita.
+              prescriptionId: "21"
+      responses:
+        "201":
+          description: Acompanhamento registrado.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FollowUp"
+              example:
+                id: "3"
+                patientId: "15"
+                prescriptionId: "21"
+                occurredOn: "2026-10-18"
+                description: Contato telefônico fictício para orientar a renovação da receita.
+                recordedBy:
+                  id: "4"
+                  fullName: Ana Souza Fictícia
+                createdAt: "2026-10-18T19:00:00.000Z"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/PatientNotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /prescriptions:
+    post:
+      tags: [Receitas]
+      operationId: createPrescription
+      summary: Cadastrar receita
+      description: |
+        Vincula a receita a um paciente existente. Exige prescriptions:create.
+        expiresOn pode ser omitido ou nulo; a receita fica pendente de
+        informação e não entra nas faixas de prazo. Data de calendário
+        inválida responde 400 e nada é gravado. Não há regra de prazo
+        clínico mínimo ou máximo. O limite de 9999 dias evita uma data
+        fora da representação civil, e não é regra clínica.
+        issuedOn omitido grava o dia corrente em America/Sao_Paulo.
+        validityDays calcula expiresOn a partir de issuedOn. Se expiresOn
+        também vier e divergir, nada é gravado. prescriptionType e items
+        entram juntos. Cada medicamento exige nome, dosagem, quantidade e
+        ao menos um período. Receita e itens são gravados na mesma
+        transação. O servidor associa a receita ao usuário autenticado.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PrescriptionCreateRequest"
+            example:
+              patientId: "15"
+              prescriptionType: COMUM
+              issuedOn: "2026-10-18"
+              validityDays: 30
+              expiresOn: "2026-11-17"
+              notes: Aguardando comparecimento fictício à unidade.
+              items:
+                - medicationName: Losartana
+                  dosage: 50 mg
+                  quantity: "30"
+                  morning: true
+                  afternoon: false
+                  night: false
+      responses:
+        "201":
+          description: Receita armazenada e vinculada ao paciente.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Prescription"
+              example:
+                id: "21"
+                patient:
+                  id: "15"
+                  fullName: Maria Helena Fictícia
+                  cpf: 529.982.247-25
+                issuedOn: "2026-10-18"
+                expiresOn: "2026-11-17"
+                prescriptionType: COMUM
+                items:
+                  - id: "1"
+                    medicationName: Losartana
+                    dosage: 50 mg
+                    quantity: "30"
+                    morning: true
+                    afternoon: false
+                    night: false
+                notes: Aguardando comparecimento fictício à unidade.
+                lifecycleStatus: ATIVA
+                situation: DENTRO_DO_PRAZO
+                alertBand: DENTRO_DO_PRAZO
+                daysUntilExpiry: 30
+                visualEmphasis: false
+                referenceDate: "2026-10-18"
+                timezone: America/Sao_Paulo
+                createdAt: "2026-10-18T16:10:00-03:00"
+                updatedAt: "2026-10-18T16:10:00-03:00"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/PatientNotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    get:
+      tags: [Receitas]
+      operationId: listPrescriptions
+      summary: Consultar receitas
+      description: |
+        Exige prescriptions:read. Cada item traz o paciente, a data de
+        vencimento e a situação calculada. Use patientId para localizar
+        as receitas de um paciente. Lista vazia significa que não existem
+        registros para o filtro informado.
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+        - name: sort
+          in: query
+          schema:
+            type: string
+            enum: [expiresOn, -expiresOn, patientName, -patientName, createdAt, -createdAt]
+            default: -createdAt
+        - name: patientId
+          in: query
+          required: false
+          description: Restringe as receitas ao paciente informado.
+          schema:
+            type: string
+            description: Inteiro do banco em texto decimal. Não é UUID.
+            pattern: '^[1-9][0-9]*$'
+        - $ref: "#/components/parameters/StatusFilter"
+        - $ref: "#/components/parameters/AlertBandFilter"
+        - name: lifecycleStatus
+          in: query
+          required: false
+          description: |
+            Quando omitido ou ATIVA, devolve somente receitas ativas.
+            CANCELADA devolve as receitas com cancelamento persistido.
+          schema:
+            $ref: "#/components/schemas/LifecycleStatus"
+      responses:
+        "200":
+          description: Página de receitas.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PrescriptionList"
+              example:
+                data: []
+                page: 1
+                pageSize: 20
+                total: 0
+                referenceDate: "2026-10-18"
+                timezone: America/Sao_Paulo
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /prescriptions/alerts:
+    get:
+      tags: [Dashboard]
+      operationId: listPrescriptionAlerts
+      summary: Consultar alertas de vencimento
+      description: |
+        Lista receitas ativas nas faixas de alerta. Exige dashboard:read.
+        O padrão do parâmetro band é proxima, isto é, vencimento na data
+        corrente ou nos 15 dias seguintes, na proposta ainda pendente.
+        Esta rota estática deve ser registrada antes de /prescriptions/{id}.
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+        - name: sort
+          in: query
+          schema:
+            type: string
+            enum: [expiresOn, -expiresOn]
+            default: expiresOn
+        - name: band
+          in: query
+          required: false
+          description: |
+            Faixa pedida pelo indicador visual. proxima reúne PROXIMA_5 e
+            PROXIMA_15. Os limites de dias estão pendentes de confirmação.
+          schema:
+            type: string
+            enum: [vencida, proxima_5, proxima_15, proxima, pendente]
+            default: proxima
+      responses:
+        "200":
+          description: Receitas da faixa solicitada.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PrescriptionList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /prescriptions/{id}:
+    parameters:
+      - $ref: "#/components/parameters/PrescriptionId"
+    get:
+      tags: [Receitas]
+      operationId: getPrescription
+      summary: Consultar receita por identificador
+      description: Exige prescriptions:read. A situação é calculada na leitura.
+      responses:
+        "200":
+          description: Receita encontrada.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Prescription"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/PrescriptionNotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    patch:
+      tags: [Receitas]
+      operationId: updatePrescription
+      summary: Atualizar campos permitidos da receita
+      description: |
+        Permite alterar expiresOn, notes e lifecycleStatus.
+        patientId no corpo responde 400. expiresOn nulo limpa o vencimento
+        e a receita passa a pendente de informação. Mudar para CANCELADA
+        exige também prescriptions:cancel, grava a data e o usuário
+        responsável e não apaga a receita. Voltar para ATIVA remove o
+        cancelamento. Repetir o estado atual não cria outro cancelamento.
+        A situação de prazo continua calculada e ignora receitas canceladas
+        nos alertas.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PrescriptionUpdateRequest"
+            example:
+              expiresOn: "2026-10-23"
+      responses:
+        "200":
+          description: Receita atualizada e reclassificada.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Prescription"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/PrescriptionNotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /dashboard/summary:
+    get:
+      tags: [Dashboard]
+      operationId: getDashboardSummary
+      summary: Consultar indicadores do dashboard
+      description: |
+        Conta receitas por faixa de alerta na data corrente do servidor.
+        Exige dashboard:read. Os limites de 5 e 15 dias vêm de uma única
+        configuração e seguem pendentes de confirmação clínica.
+        pendentesInformacao conta receitas ativas sem data de vencimento.
+        Receitas canceladas não entram nas faixas.
+      responses:
+        "200":
+          description: Contagens alinhadas às listas filtradas pela mesma regra.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DashboardSummary"
+              example:
+                referenceDate: "2026-10-18"
+                timezone: America/Sao_Paulo
+                alertWindows:
+                  nearDays: 5
+                  attentionDays: 15
+                counts:
+                  vencidas: 1
+                  proximas5: 1
+                  proximas15: 0
+                  dentroDoPrazo: 1
+                  pendentesInformacao: 0
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /addresses/cep/{cep}:
+    get:
+      tags: [Enderecos]
+      operationId: lookupCep
+      summary: Consultar endereço pelo CEP
+      description: |
+        Consulta o ViaCEP. Exige patients:read.
+        Não grava o paciente e não envia nome nem documento.
+        Falha externa responde 503. CEP sem correspondência responde 404.
+        O logradouro sugerido pode ser gravado depois no campo street.
+      parameters:
+        - name: cep
+          in: path
+          required: true
+          description: Oito dígitos, com ou sem hífen.
+          schema:
+            type: string
+            pattern: '^(\d{8}|\d{5}-\d{3})$'
+      responses:
+        "200":
+          description: Endereço sugerido. Todos os campos podem ser corrigidos antes de salvar.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CepLookup"
+              example:
+                postalCode: 01310-000
+                street: Avenida Exemplo
+                complement: ""
+                neighborhood: Bairro Exemplo
+                city: Cidade Exemplo
+                state: SP
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: O provedor não encontrou o CEP. O preenchimento manual continua disponível.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                code: CEP_NOT_FOUND
+                message: CEP não encontrado. Preencha o endereço manualmente.
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          description: O serviço externo de CEP não respondeu. O cadastro manual não fica bloqueado.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                code: CEP_LOOKUP_UNAVAILABLE
+                message: A consulta de CEP está indisponível. Preencha o endereço manualmente.
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        JWT de acesso emitido por POST /auth/login. A proposta de expiração
+        é de 3600 segundos. Usuário inativo é recusado mesmo que o token
+        ainda não tenha vencido.
+  parameters:
+    Page:
+      name: page
+      in: query
+      description: Página, começando em 1.
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+    PageSize:
+      name: pageSize
+      in: query
+      description: Quantidade de itens na página. O máximo é 100.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+    PatientId:
+      name: id
+      in: path
+      required: true
+      description: Identificador do paciente.
+      schema:
+        type: string
+        description: Inteiro do banco em texto decimal. Não é UUID.
+        pattern: '^[1-9][0-9]*$'
+    PrescriptionId:
+      name: id
+      in: path
+      required: true
+      description: Identificador da receita.
+      schema:
+        type: string
+        description: Inteiro do banco em texto decimal. Não é UUID.
+        pattern: '^[1-9][0-9]*$'
+    StatusFilter:
+      name: statusFilter
+      in: query
+      required: false
+      description: |
+        Filtro operacional de prazo. proxima reúne as faixas de até 5 dias
+        e de 6 a 15 dias. dentro_do_prazo é a faixa acima de 15 dias.
+      schema:
+        type: string
+        enum: [vencida, proxima, dentro_do_prazo, pendente]
+    AlertBandFilter:
+      name: alertBand
+      in: query
+      required: false
+      description: Faixa específica, usada pelos indicadores do dashboard.
+      schema:
+        $ref: "#/components/schemas/AlertBand"
+  responses:
+    BadRequest:
+      description: |
+        Pedido inválido. Códigos usuais: VALIDATION_ERROR, CPF_INVALID e
+        DATE_INVALID. A validação do CPF usa o algoritmo dos dígitos
+        verificadores.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ValidationError"
+          example:
+            code: CPF_INVALID
+            message: CPF inválido.
+            details:
+              - field: cpf
+                message: Os dígitos verificadores não conferem.
+    Unauthorized:
+      description: Token ausente, inválido ou expirado, ou usuário inativo após a emissão.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            code: UNAUTHENTICATED
+            message: Autenticação necessária.
+    Forbidden:
+      description: |
+        Usuário autenticado sem a permissão da operação. O corpo não traz
+        dados de paciente ou de receita.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            code: FORBIDDEN
+            message: Você não tem permissão para esta operação.
+    PatientNotFound:
+      description: Não há paciente com o identificador informado.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            code: PATIENT_NOT_FOUND
+            message: Paciente não encontrado.
+    PrescriptionNotFound:
+      description: Não há receita com o identificador informado.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            code: PRESCRIPTION_NOT_FOUND
+            message: Receita não encontrada.
+    InternalError:
+      description: Falha inesperada. A mensagem não expõe detalhe interno.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            code: INTERNAL_ERROR
+            message: Não foi possível concluir a operação.
+  schemas:
+    Error:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+    FieldError:
+      type: object
+      additionalProperties: false
+      required: [field, message]
+      properties:
+        field:
+          type: string
+        message:
+          type: string
+    ValidationError:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+        details:
+          type: array
+          items:
+            $ref: "#/components/schemas/FieldError"
+    CpfConflict:
+      type: object
+      additionalProperties: false
+      required: [code, message, existingPatientId]
+      properties:
+        code:
+          type: string
+          enum: [CPF_ALREADY_EXISTS]
+        message:
+          type: string
+        existingPatientId:
+          type: string
+          description: Inteiro do banco em texto decimal. Não é UUID.
+          pattern: '^[1-9][0-9]*$'
+    NameChangeConflict:
+      type: object
+      additionalProperties: false
+      required: [code, message, currentName, informedName]
+      properties:
+        code:
+          type: string
+          enum: [NAME_CHANGE_CONFIRMATION_REQUIRED]
+        message:
+          type: string
+        currentName:
+          type: string
+        informedName:
+          type: string
+    LoginRequest:
+      type: object
+      additionalProperties: false
+      required: [username, password]
+      properties:
+        username:
+          type: string
+          minLength: 1
+          maxLength: 80
+        password:
+          type: string
+          format: password
+          minLength: 1
+          maxLength: 200
+    LoginResponse:
+      type: object
+      additionalProperties: false
+      required: [accessToken, tokenType, expiresIn]
+      properties:
+        accessToken:
+          type: string
+        tokenType:
+          type: string
+          enum: [Bearer]
+        expiresIn:
+          type: integer
+          description: Validade do token em segundos. Proposta pendente de 3600.
+          example: 3600
+    RoleSummary:
+      type: object
+      additionalProperties: false
+      required: [code, name]
+      properties:
+        code:
+          type: string
+        name:
+          type: string
+    AuthenticatedUser:
+      type: object
+      additionalProperties: false
+      required: [id, username, fullName, active, roles, permissions]
+      properties:
+        id:
+          type: string
+          description: Inteiro do banco em texto decimal. Não é UUID.
+          pattern: '^[1-9][0-9]*$'
+        username:
+          type: string
+        fullName:
+          type: string
+        active:
+          type: boolean
+        roles:
+          type: array
+          items:
+            $ref: "#/components/schemas/RoleSummary"
+        permissions:
+          type: array
+          items:
+            type: string
+    Age:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        years:
+          type: integer
+          nullable: true
+          minimum: 0
+        status:
+          type: string
+          enum: [CALCULADA, NAO_INFORMADA]
+    Patient:
+      type: object
+      additionalProperties: false
+      required: [id, cpf, fullName, age, active, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+          description: Inteiro do banco em texto decimal. Não é UUID.
+          pattern: '^[1-9][0-9]*$'
+        cpf:
+          type: string
+          nullable: true
+          description: |
+            CPF mascarado. Pode ser nulo em cadastros antigos. O cadastro
+            novo sempre grava 11 dígitos.
+          example: 529.982.247-25
+        fullName:
+          type: string
+        birthDate:
+          type: string
+          format: date
+          nullable: true
+        phone:
+          type: string
+          nullable: true
+          description: Telefone formatado, com DDD.
+        postalCode:
+          type: string
+          nullable: true
+        street:
+          type: string
+          nullable: true
+        addressNumber:
+          type: string
+          nullable: true
+          description: Número do endereço, gravado na coluna numero.
+        complement:
+          type: string
+          nullable: true
+        neighborhood:
+          type: string
+          nullable: true
+        city:
+          type: string
+          nullable: true
+        state:
+          type: string
+          nullable: true
+          minLength: 2
+          maxLength: 2
+        age:
+          $ref: "#/components/schemas/Age"
+        active:
+          type: boolean
+          description: Sempre verdadeiro. Não há coluna de inativação.
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    PatientList:
+      type: object
+      additionalProperties: false
+      required: [data, page, pageSize, total]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Patient"
+        page:
+          type: integer
+          minimum: 1
+        pageSize:
+          type: integer
+          minimum: 1
+        total:
+          type: integer
+          minimum: 0
+    PatientCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [cpf, fullName]
+      properties:
+        cpf:
+          type: string
+          description: |
+            Onze dígitos ou máscara 000.000.000-00. Sequência com todos os
+            dígitos iguais e dígito verificador incorreto são rejeitados
+            por algoritmo.
+          pattern: '^(\d{11}|\d{3}\.\d{3}\.\d{3}-\d{2})$'
+        fullName:
+          type: string
+          minLength: 1
+          maxLength: 150
+          description: Limitado a 150 caracteres, tamanho da coluna nome.
+        birthDate:
+          type: string
+          format: date
+        phone:
+          type: string
+          maxLength: 20
+        postalCode:
+          type: string
+          pattern: '^(\d{8}|\d{5}-\d{3})$'
+        street:
+          type: string
+          maxLength: 200
+        addressNumber:
+          type: string
+          maxLength: 20
+        complement:
+          type: string
+          maxLength: 120
+        neighborhood:
+          type: string
+          maxLength: 120
+        city:
+          type: string
+          maxLength: 120
+        state:
+          type: string
+          pattern: '^[A-Za-z]{2}$'
+    PatientUpdateRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        fullName:
+          type: string
+          minLength: 1
+          maxLength: 150
+          description: Limitado a 150 caracteres, tamanho da coluna nome.
+        confirmNameChange:
+          type: boolean
+          default: false
+          description: Obrigatório verdadeiro quando o nome difere do cadastro.
+        birthDate:
+          type: string
+          format: date
+          nullable: true
+        phone:
+          type: string
+          nullable: true
+          maxLength: 20
+        postalCode:
+          type: string
+          nullable: true
+        street:
+          type: string
+          nullable: true
+          maxLength: 200
+        addressNumber:
+          type: string
+          nullable: true
+          maxLength: 20
+        complement:
+          type: string
+          nullable: true
+          maxLength: 120
+        neighborhood:
+          type: string
+          nullable: true
+          maxLength: 120
+        city:
+          type: string
+          nullable: true
+          maxLength: 120
+        state:
+          type: string
+          nullable: true
+          pattern: '^[A-Za-z]{2}$'
+    FollowUp:
+      description: Registro persistido de acompanhamento do paciente.
+      type: object
+      additionalProperties: false
+      required: [id, patientId, occurredOn, description, recordedBy, createdAt]
+      properties:
+        id:
+          type: string
+          description: Inteiro do banco em texto decimal. Não é UUID.
+          pattern: '^[1-9][0-9]*$'
+        patientId:
+          type: string
+          description: Inteiro do banco em texto decimal. Não é UUID.
+          pattern: '^[1-9][0-9]*$'
+        prescriptionId:
+          type: string
+          description: Inteiro do banco em texto decimal. Não é UUID.
+          pattern: '^[1-9][0-9]*$'
+          nullable: true
+        occurredOn:
+          type: string
+          format: date
+        description:
+          type: string
+        recordedBy:
+          $ref: "#/components/schemas/UserSummary"
+        createdAt:
+          type: string
+          format: date-time
+    FollowUpCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [occurredOn, description]
+      properties:
+        occurredOn:
+          type: string
+          format: date
+        description:
+          type: string
+          minLength: 1
+          maxLength: 2000
+        prescriptionId:
+          type: string
+          description: Inteiro do banco em texto decimal. Não é UUID.
+          pattern: '^[1-9][0-9]*$'
+    FollowUpList:
+      type: object
+      additionalProperties: false
+      required: [data, page, pageSize, total]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/FollowUp"
+        page:
+          type: integer
+        pageSize:
+          type: integer
+        total:
+          type: integer
+          minimum: 0
+    UserSummary:
+      type: object
+      additionalProperties: false
+      required: [id, fullName]
+      properties:
+        id:
+          type: string
+          description: Inteiro do banco em texto decimal. Não é UUID.
+          pattern: '^[1-9][0-9]*$'
+        fullName:
+          type: string
+    PatientSummary:
+      type: object
+      additionalProperties: false
+      required: [id, fullName, cpf]
+      properties:
+        id:
+          type: string
+          description: Inteiro do banco em texto decimal. Não é UUID.
+          pattern: '^[1-9][0-9]*$'
+        fullName:
+          type: string
+        cpf:
+          type: string
+    LifecycleStatus:
+      type: string
+      enum: [ATIVA, CANCELADA]
+    Situation:
+      type: string
+      description: Situação base calculada. Não é coluna persistida.
+      enum: [VENCIDA, DENTRO_DO_PRAZO, PENDENTE_INFORMACAO]
+    AlertBand:
+      type: string
+      description: |
+        Faixa de alerta calculada. Proposta pendente: VENCIDA antes de hoje;
+        PROXIMA_5 de 0 a 5 dias; PROXIMA_15 de 6 a 15 dias; DENTRO_DO_PRAZO
+        acima de 15 dias; PENDENTE_INFORMACAO sem data.
+      enum: [VENCIDA, PROXIMA_5, PROXIMA_15, DENTRO_DO_PRAZO, PENDENTE_INFORMACAO]
+    Prescription:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - patient
+        - lifecycleStatus
+        - situation
+        - alertBand
+        - visualEmphasis
+        - issuedOn
+        - prescriptionType
+        - items
+        - referenceDate
+        - timezone
+        - createdAt
+        - updatedAt
+      properties:
+        id:
+          type: string
+          description: Inteiro do banco em texto decimal. Não é UUID.
+          pattern: '^[1-9][0-9]*$'
+        patient:
+          $ref: "#/components/schemas/PatientSummary"
+        expiresOn:
+          type: string
+          format: date
+          nullable: true
+        notes:
+          type: string
+          nullable: true
+        lifecycleStatus:
+          $ref: "#/components/schemas/LifecycleStatus"
+        situation:
+          $ref: "#/components/schemas/Situation"
+        alertBand:
+          $ref: "#/components/schemas/AlertBand"
+        daysUntilExpiry:
+          type: integer
+          nullable: true
+          description: Diferença em dias civis. Negativo quando a data já passou.
+        visualEmphasis:
+          type: boolean
+          description: Verdadeiro quando a situação base é VENCIDA.
+        issuedOn:
+          type: string
+          format: date
+          description: Data civil de emissão gravada. Não é createdAt.
+        prescriptionType:
+          nullable: true
+          allOf:
+            - $ref: "#/components/schemas/PrescriptionType"
+          description: Nulo nas receitas gravadas antes deste campo.
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/PrescriptionMedication"
+        referenceDate:
+          type: string
+          format: date
+          description: Data corrente usada no cálculo, no fuso informado.
+        timezone:
+          type: string
+          example: America/Sao_Paulo
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    PrescriptionCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [patientId]
+      properties:
+        patientId:
+          type: string
+          description: Inteiro do banco em texto decimal. Não é UUID.
+          pattern: '^[1-9][0-9]*$'
+        expiresOn:
+          type: string
+          format: date
+          nullable: true
+          description: |
+            Quando omitido ou nulo, a receita fica pendente de informação.
+        notes:
+          type: string
+          maxLength: 2000
+          description: Observação operacional. Evitar diagnóstico ou dado clínico livre.
+        prescriptionType:
+          $ref: "#/components/schemas/PrescriptionType"
+        issuedOn:
+          type: string
+          format: date
+          description: Data civil de emissão. Omitida, vale o dia corrente em America/Sao_Paulo.
+        validityDays:
+          type: integer
+          minimum: 1
+          maximum: 9999
+          description: |
+            Dias civis somados a issuedOn para obter expiresOn.
+            O máximo evita uma data irrepresentável e não é regra clínica.
+        items:
+          type: array
+          minItems: 1
+          maxItems: 30
+          items:
+            $ref: "#/components/schemas/PrescriptionMedicationInput"
+    PrescriptionType:
+      type: string
+      enum: [COMUM, CONTROLADA]
+    PrescriptionMedicationInput:
+      type: object
+      additionalProperties: false
+      required: [medicationName, dosage, quantity, morning, afternoon, night]
+      properties:
+        medicationName:
+          type: string
+          minLength: 1
+          maxLength: 180
+        dosage:
+          type: string
+          minLength: 1
+          maxLength: 80
+        quantity:
+          type: string
+          minLength: 1
+          maxLength: 40
+        morning:
+          type: boolean
+        afternoon:
+          type: boolean
+        night:
+          type: boolean
+    PrescriptionMedication:
+      type: object
+      additionalProperties: false
+      required: [id, medicationName, dosage, quantity, morning, afternoon, night]
+      properties:
+        id:
+          type: string
+          description: Inteiro do banco em texto decimal. Não é UUID.
+          pattern: '^[1-9][0-9]*$'
+        medicationName:
+          type: string
+        dosage:
+          type: string
+        quantity:
+          type: string
+        morning:
+          type: boolean
+        afternoon:
+          type: boolean
+        night:
+          type: boolean
+    PrescriptionUpdateRequest:
+      type: object
+      additionalProperties: false
+      description: patientId não pertence a este contrato. Enviá-lo responde 400.
+      properties:
+        expiresOn:
+          type: string
+          format: date
+          nullable: true
+          description: Null limpa o vencimento e marca a receita como pendente de informação.
+        notes:
+          type: string
+          nullable: true
+          maxLength: 2000
+        lifecycleStatus:
+          $ref: "#/components/schemas/LifecycleStatus"
+    PrescriptionList:
+      type: object
+      additionalProperties: false
+      required: [data, page, pageSize, total, referenceDate, timezone]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Prescription"
+        page:
+          type: integer
+        pageSize:
+          type: integer
+        total:
+          type: integer
+          minimum: 0
+        referenceDate:
+          type: string
+          format: date
+        timezone:
+          type: string
+    DashboardCounts:
+      type: object
+      additionalProperties: false
+      required: [vencidas, proximas5, proximas15, dentroDoPrazo, pendentesInformacao]
+      properties:
+        vencidas:
+          type: integer
+          minimum: 0
+        proximas5:
+          type: integer
+          minimum: 0
+        proximas15:
+          type: integer
+          minimum: 0
+        dentroDoPrazo:
+          type: integer
+          minimum: 0
+        pendentesInformacao:
+          type: integer
+          minimum: 0
+    DashboardSummary:
+      type: object
+      additionalProperties: false
+      required: [referenceDate, timezone, alertWindows, counts]
+      properties:
+        referenceDate:
+          type: string
+          format: date
+        timezone:
+          type: string
+          example: America/Sao_Paulo
+        alertWindows:
+          type: object
+          additionalProperties: false
+          required: [nearDays, attentionDays]
+          properties:
+            nearDays:
+              type: integer
+              description: Limite inclusive da faixa próxima. Proposta 5.
+              example: 5
+            attentionDays:
+              type: integer
+              description: Limite inclusive da faixa de atenção. Proposta 15.
+              example: 15
+        counts:
+          $ref: "#/components/schemas/DashboardCounts"
+    PriorityPatient:
+      type: object
+      additionalProperties: false
+      required: [id, fullName, nearestExpiryOn, alertBand, daysUntilExpiry]
+      properties:
+        id:
+          type: string
+          description: Inteiro do banco em texto decimal. Não é UUID.
+          pattern: '^[1-9][0-9]*$'
+        fullName:
+          type: string
+        phone:
+          type: string
+          nullable: true
+        nearestExpiryOn:
+          type: string
+          format: date
+        alertBand:
+          $ref: "#/components/schemas/AlertBand"
+        daysUntilExpiry:
+          type: integer
+    PriorityPatientList:
+      type: object
+      additionalProperties: false
+      required: [data, page, pageSize, total, referenceDate, timezone]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/PriorityPatient"
+        page:
+          type: integer
+        pageSize:
+          type: integer
+        total:
+          type: integer
+          minimum: 0
+        referenceDate:
+          type: string
+          format: date
+        timezone:
+          type: string
+    CepLookup:
+      type: object
+      additionalProperties: false
+      required: [postalCode, street, neighborhood, city, state]
+      properties:
+        postalCode:
+          type: string
+        street:
+          type: string
+        complement:
+          type: string
+          nullable: true
+        neighborhood:
+          type: string
+        city:
+          type: string
+        state:
+          type: string
+          minLength: 2
+          maxLength: 2

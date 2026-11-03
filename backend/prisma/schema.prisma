@@ -1,0 +1,126 @@
+
+generator client {
+  provider     = "prisma-client"
+  output       = "../src/generated/prisma"
+  moduleFormat = "cjs"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Paciente {
+  id             Int      @id @default(autoincrement())
+  nome           String   @db.VarChar(150)
+  cpf            String?  @unique @db.VarChar(11)
+  dataNascimento DateTime? @map("data_nascimento") @db.Date
+  telefone       String?  @db.VarChar(20)
+  cep            String?  @db.VarChar(8)
+  endereco       String?  @db.VarChar(255)
+  numero         String?  @db.VarChar(20)
+  complemento    String?  @db.VarChar(120)
+  bairro         String?  @db.VarChar(120)
+  cidade         String?  @db.VarChar(120)
+  uf             String?  @db.VarChar(2)
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  receitas        Receita[]
+  historico       HistoricoPaciente[]
+  acompanhamentos Acompanhamento[]
+
+  @@map("pacientes")
+}
+
+model Usuario {
+  id        Int      @id @default(autoincrement())
+  nome      String   @db.VarChar(150)
+  email     String   @unique @db.VarChar(180)
+  senhaHash String   @map("senha_hash") @db.VarChar(255)
+  perfil    String   @db.VarChar(30)
+  ativo     Boolean  @default(true)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  receitas           Receita[]           @relation("ReceitaEmitidaPor")
+  receitasCanceladas Receita[]           @relation("ReceitaCanceladaPor")
+  alteracoesPaciente HistoricoPaciente[]
+  acompanhamentos    Acompanhamento[]
+
+  @@map("usuarios")
+}
+
+model Receita {
+  id             Int      @id @default(autoincrement())
+  pacienteId     Int      @map("paciente_id")
+  usuarioId      Int      @map("usuario_id")
+  dataEmissao    DateTime  @map("data_emissao") @db.Date
+  dataVencimento DateTime? @map("data_vencimento") @db.Date
+  tipoReceita    String?   @map("tipo_receita") @db.VarChar(20)
+  observacoes    String?   @db.Text
+  canceladaEm    DateTime? @map("cancelada_em")
+  canceladaPorId Int?      @map("cancelada_por_id")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  paciente       Paciente         @relation(fields: [pacienteId], references: [id], onDelete: Restrict)
+  usuario        Usuario          @relation("ReceitaEmitidaPor", fields: [usuarioId], references: [id], onDelete: Restrict)
+  canceladaPor   Usuario?         @relation("ReceitaCanceladaPor", fields: [canceladaPorId], references: [id], onDelete: Restrict)
+  itens          ItemReceita[]
+  acompanhamentos Acompanhamento[]
+
+  @@index([dataVencimento])
+  @@index([pacienteId])
+  @@index([canceladaEm])
+  @@map("receitas")
+}
+
+model Acompanhamento {
+  id         Int      @id @default(autoincrement())
+  pacienteId Int      @map("paciente_id")
+  receitaId  Int?     @map("receita_id")
+  usuarioId  Int      @map("usuario_id")
+  ocorreuEm  DateTime @map("ocorreu_em") @db.Date
+  descricao  String   @db.VarChar(2000)
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  paciente Paciente @relation(fields: [pacienteId], references: [id], onDelete: Restrict)
+  receita  Receita? @relation(fields: [receitaId], references: [id], onDelete: Restrict)
+  usuario  Usuario  @relation(fields: [usuarioId], references: [id], onDelete: Restrict)
+
+  @@index([pacienteId, ocorreuEm])
+  @@index([receitaId])
+  @@map("acompanhamentos")
+}
+
+model ItemReceita {
+  id              Int      @id @default(autoincrement())
+  receitaId       Int      @map("receita_id")
+  nomeMedicamento String   @map("nome_medicamento") @db.VarChar(180)
+  dosagem         String   @db.VarChar(80)
+  quantidade      String   @db.VarChar(40)
+  usoManha        Boolean  @default(false) @map("uso_manha")
+  usoTarde        Boolean  @default(false) @map("uso_tarde")
+  usoNoite        Boolean  @default(false) @map("uso_noite")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  receita Receita @relation(fields: [receitaId], references: [id], onDelete: Restrict)
+
+  @@index([receitaId])
+  @@map("itens_receita")
+}
+
+model HistoricoPaciente {
+  id             Int      @id @default(autoincrement())
+  pacienteId     Int      @map("paciente_id")
+  usuarioId      Int?     @map("usuario_id")
+  campoAlterado  String   @map("campo_alterado") @db.VarChar(100)
+  valorAnterior  String?  @map("valor_anterior") @db.Text
+  valorNovo      String?  @map("valor_novo") @db.Text
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  paciente Paciente @relation(fields: [pacienteId], references: [id], onDelete: Restrict)
+  usuario  Usuario? @relation(fields: [usuarioId], references: [id], onDelete: Restrict)
+
+  @@index([pacienteId])
+  @@map("historico_pacientes")
+}

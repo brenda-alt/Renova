@@ -1,0 +1,20 @@
+# Dependências
+node_modules/
+
+# Variáveis de ambiente
+.env
+.env.*
+!.env.example
+
+# Builds
+dist/
+build/
+coverage/
+
+# Logs
+*.log
+
+# Dados locais do PostgreSQL
+data/
+pg_wal/
+postmaster.pid
